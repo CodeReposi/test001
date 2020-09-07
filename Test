@@ -1,0 +1,593 @@
+public class SalesReport2Controller {
+    public Date viewStartDate 								{get;set;}
+    public Date ViewEndDate 								{get;set;}
+    public string nowDateTime 								{get;set;}
+    public Account account 									{get;set;}
+    public Decimal carePlan									{get;set;}
+    public Decimal PPVAmount								{get;set;}
+    public Map<string,ReportTableWrapper> transactionMap 	{get;set;}
+    public TotalValuesWrapper totalValues					{get;set;}
+    public TotalValuesWrapper clinicCollection				{get;set;}
+    public Integer NPVisit									{get;set;}
+    public Integer patientVisit								{get;set;}
+    public Integer DTVisit									{get;set;}
+    public Integer missedAppt								{get;set;}
+    public Integer DeletedAppt								{get;set;}
+    public Integer rescheduleCount							{get;set;}
+    public Integer totalAppt								{get;set;}
+    public List<TransactionReportWrapper> transList			{get;set;}
+    public List<TransactionReportWrapper> voidedTransList	{get;set;}
+    public boolean isAdmin									{get;set;}
+    public decimal amountXray                               {get;set;}
+    public decimal amountNP                                 {get;set;}
+    public decimal amountPPV                                {get;set;}
+    public decimal amountOwing                              {get;set;}
+    public decimal amountXrayNew                            {get;set;}
+    public decimal totalProducts                            {get;set;}
+    public decimal totalSales                               {get;set;}
+    public decimal totalCollection                          {get;set;}
+    public decimal totalGSTSales                            {get;set;}
+    public decimal totalGSTCollection                       {get;set;}
+    public decimal totalPrepaidSales                        {get;set;}
+    public decimal totalSubsidyPlanCollection               {get;set;}
+    public decimal countNP                                  {get;set;}
+    public decimal countPPV                                 {get;set;}
+    public decimal fhc                                      {get;set;}
+    public decimal goh                                      {get;set;}
+    public decimal hbc										{get;set;}
+    public List<Appointment__c> listUnverifiedAppointments  {get;set;}
+    //-------------- Constructor --------------------------
+    public salesReport2Controller(){
+        isAdmin = false;
+       	if([SELECT Id FROM Profile WHERE Id= :userinfo.getProfileId() AND name LIKE '%Admin%'].size()>0) 
+            isAdmin = true;
+        
+        
+        viewStartDate = date.valueOf(ApexPages.currentPage().getParameters().get('startDate'));
+        ViewEndDate = date.valueOf(ApexPages.currentPage().getParameters().get('endDate'));
+        date startDate = date.valueOf(viewStartDate);
+        date endDate = date.valueOf(ViewEndDate);
+        nowDateTime = System.now().format() ;
+        string clinicId = ApexPages.currentPage().getParameters().get('clinicId');
+        string doctorId = ApexPages.currentPage().getParameters().get('doctorId');
+        
+        totalValues = new TotalValuesWrapper();
+        totalValues.totalComm = 0;
+        totalValues.totalNonComm = 0;
+        
+        clinicCollection = new TotalValuesWrapper();
+        clinicCollection.totalComm = 0;
+        clinicCollection.totalNonComm = 0;
+        
+        transList = new List<TransactionReportWrapper>();
+        voidedTransList = new List<TransactionReportWrapper>();
+        carePlan = 0.0;
+        PPVAmount=0.0;
+        NPVisit = 0;
+        patientVisit=0;
+        DTVisit=0;
+        missedAppt=0;
+        DeletedAppt=0;
+        rescheduleCount=0;
+        totalAppt=0;
+        totalSales = 0;
+        totalCollection = 0;
+        totalGSTSales = 0;
+        totalGSTCollection = 0; 
+        totalPrepaidSales = 0;
+        totalSubsidyPlanCollection = 0;
+        countNP = 0;
+        countPPV = 0;
+        fhc = 0;
+        goh = 0;
+        hbc = 0;
+        listUnverifiedAppointments = new List<Appointment__c>();
+        
+        string nameQuery = 'SELECT Id,Name FROM Account WHERE id =';
+        
+        if(doctorId != NULL)
+            nameQuery += ' :doctorId';
+        else
+            nameQuery += ' :clinicId';
+        account = Database.query(nameQuery);
+        
+        transactionMap = fetchTransactions(startDate,endDate,clinicId,doctorId);
+        setAppointmentCounts(startDate,endDate,clinicId,doctorId);
+        
+    }
+    
+    //-------------------------------- Top Appointment Counts ----------------------------------------------
+    private void setAppointmentCounts(Date startDate, Date endDate, String clinicId,string doctorId){
+        
+        string appointmentQuery = 'SELECT Id,Appointment_Type__r.Name,Status__c,service_type__c,Patient__r.Name,Appointment_Date__c,Clinic_Name__r.Name,Doctor_Name__r.Name,HC_Svc_Type__c,Verified__c ';
+        appointmentQuery += 'FROM Appointment__c WHERE';
+        if(startDate == endDate){
+            appointmentQuery +=' Appointment_Date__c = :startDate ';
+        }else{
+            appointmentQuery +=' Appointment_Date__c >= :startDate ';
+            appointmentQuery +='AND Appointment_Date__c<= :endDate '; 
+        }
+        appointmentQuery += 'AND Status__c != \'Scheduled\'';
+        appointmentQuery += 'AND Clinic_Name__c =:ClinicId';
+        if(doctorId != NULL) appointmentQuery +=' AND Doctor_Name__c = :doctorId';
+        appointmentQuery += ' ORDER BY Appointment_Date__c';
+        for(Appointment__c appt : Database.query(appointmentQuery)){
+            if(appt.Appointment_Type__r.Name=='New Patient' && appt.Status__c =='Completed'){
+                NPVisit +=1;
+            }
+            else if(appt.Status__c =='Completed' && appt.service_type__c=='DT'){
+                DTVisit +=1;
+            }
+            else if(appt.Status__c =='Completed'){
+                patientVisit +=1;
+            }
+            else if(appt.Status__c =='No Show' || appt.Status__c =='Cancelled'){
+                missedAppt +=1;
+            }
+            else if(appt.Status__c =='Rescheduled'){
+                rescheduleCount +=1;
+            }
+            
+            totalAppt+=1;
+			
+            if(appt.Status__c =='Completed' && appt.Verified__c== false) {
+            	listUnverifiedAppointments.add(appt);    
+            }
+            
+        }
+    }
+    
+    //---------------------------------------------------------------------------------------------------------------------
+    //---------------------------------------------------------------------------------------------------------------------
+    
+    public Map<string,ReportTableWrapper> fetchTransactions(Date startDate, Date endDate, String clinicId,string doctorId){
+        String transactionQuery = 'SELECT createdDate,Date__c,Transaction_Name__c ,Charge_Amount__c,Sub_Total__c,owing__c,Clinic__r.Name,';
+        transactionQuery +='Patient_Name__r.FirstName,Patient_Name__r.LastName,void__c,LastModifiedDate,';
+        transactionQuery +='Doctor__r.Salutation,Doctor__r.Name,Tax_Amount__c,Payment_Amount__c,';
+        transactionQuery +='(SELECT Tax__c,Quantity__c,clinic_Offering__r.Name,Auto__c, prepayment__c,Commissionable__c,Charge__c,patient_subsidy_plan__r.promo__c,clinic_Offering__r.care_plan__c,clinic_Offering__r.RecordType.Name,Clinic_Offering__r.Transaction_Type__c,clinic_Offering__r.Has_Tax__c FROM Transaction_Items__r) ,';
+        transactionQuery +='(SELECT Payment_Amount__c,payment_Mode_Code__c,Installment_Options__c,Options__c FROM Payments__r ORDER BY Payment_Amount__c DESC)';
+        transactionQuery +=' FROM Transaction__c WHERE';
+        
+        if(startDate == endDate){
+            transactionQuery +=' Date__c = :startDate ';
+        }else{
+            transactionQuery +=' Date__c >= :startDate ';
+            transactionQuery +='AND Date__c <= :endDate '; 
+        }
+        
+        transactionQuery +=' AND Clinic__c = :clinicId '; 
+        //transactionQuery +=' AND void__c = FALSE'; //Uncommented this on request of Casey on 20 March 2020 & Commented on request of Casey on 13th July 2020
+        if(doctorId != NULL) transactionQuery +=' AND Doctor__c = :doctorId';
+        transactionQuery +=' ORDER BY Transaction_Name__c';
+        
+        Map<string,ReportTableWrapper> summaryTableMap = new Map<string,ReportTableWrapper>();
+        for(Transaction__c trans : Database.query(transactionQuery)){
+            
+            if(!(trans.Transaction_Name__c.contains('Profile') || trans.Transaction_Name__c.contains('Across'))){
+                TransactionReportWrapper transObj = new TransactionReportWrapper();
+                transObj.service = trans.Transaction_Name__c;
+                transObj.dt = trans.Date__c.format();
+                transObj.firstName = trans.Patient_Name__r.FirstName;
+                transObj.lastName = trans.Patient_Name__r.LastName;
+                transObj.charge = trans.Charge_Amount__c;
+                transObj.LastModifiedDate = trans.LastModifiedDate.date().format();
+                transObj.docName = '';
+                if(trans.Doctor__r.Salutation!=NULL)
+                    transObj.docName = trans.Doctor__r.Salutation;
+                transObj.docName += trans.Doctor__r.Name;
+               transObj.ClinicName = trans.Clinic__r.Name;
+                transObj.tax = trans.Tax_Amount__c;
+                transObj.payment = trans.Payment_Amount__c;
+                boolean commisionable = false,isMarketingPromo=false;
+                if(trans.getSObjects('Transaction_Items__r') != NULL){
+                    Transaction_Item__c ti = (Transaction_Item__c) trans.getSObjects('Transaction_Items__r')[0];
+                    if(ti.clinic_Offering__r.care_plan__c && ti.prepayment__c){
+                        carePlan += trans.Sub_Total__c;
+                        if(trans.Owing__c >0) carePlan -= trans.Owing__c;
+                    }
+                    if(ti.clinic_Offering__r.RecordType.Name == 'Services' && ti.clinic_Offering__r.Name.contains('Pay Per Visit')){
+                        PPVAmount += trans.Sub_Total__c;
+                        totalSales += trans.Sub_Total__c;
+                        totalCollection += trans.Sub_Total__c;
+                        if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            totalGSTSales += ti.Tax__c;
+                            totalGSTCollection += ti.Tax__c;
+                        }
+                    }
+                    if(ti.Commissionable__c && !ti.prepayment__c)
+                        commisionable = ti.Commissionable__c;
+                    transObj.Commissionable = ti.Commissionable__c;
+                    
+                    if(ti.Auto__c)
+                        transObj.tax = 0.0;
+                    
+                    isMarketingPromo = ti.patient_Subsidy_Plan__r.Promo__c;
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Services' && ti.Clinic_Offering__r.Transaction_Type__c == 'X-Ray') {
+                    	amountXray = amountXray!=null?amountXray+ti.Charge__c:ti.Charge__c; 
+                        
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Services' && ti.Clinic_Offering__r.Name == 'GP Charge') {
+                    	amountXray = amountXray!=null?amountXray+ti.Charge__c:ti.Charge__c; 
+                        
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Services' && ti.Clinic_Offering__r.Transaction_Type__c == 'X-Ray') {
+                    	amountXrayNew = amountXrayNew!=null?amountXrayNew+ti.Charge__c:ti.Charge__c;   
+                        totalSales += ti.Charge__c;
+                        totalCollection += ti.Charge__c;
+                        if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            totalGSTSales += ti.Tax__c;
+                            totalGSTCollection += ti.Tax__c;
+                        }
+                        
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Services' && ti.Clinic_Offering__r.Name == 'GP Charge') {
+                    	amountXrayNew = amountXrayNew!=null?amountXrayNew+ti.Charge__c:ti.Charge__c;   
+                        totalSales += ti.Charge__c;
+                        totalCollection += ti.Charge__c;
+                        if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            totalGSTSales += ti.Tax__c;
+                            totalGSTCollection += ti.Tax__c;
+                        }
+                        
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Product') {
+                    	totalProducts = totalProducts!=null?totalProducts+ti.Charge__c:ti.Charge__c;   
+                        totalSales += ti.Charge__c;
+                        totalCollection += ti.Charge__c;
+                        if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            totalGSTSales += ti.Tax__c;
+                            totalGSTCollection += ti.Tax__c;
+                        }
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.RecordType.Name == 'Subsidy Plan') {
+                    	//-------------Manage Sales------------------
+                        if(trans.Payment_Amount__c == 0) {
+                           totalPrepaidSales += ti.Charge__c;	 
+                        	totalSales += ti.Charge__c;	
+                            if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            	totalGSTSales += ti.Tax__c;    
+                            }
+                        }
+                        //---------------Manage Collection----------------------
+                        else if(trans.Charge_Amount__c == 0 && trans.Void__c==False) {
+                            totalCollection += ti.Charge__c;
+                            totalSubsidyPlanCollection += ti.Charge__c;
+                            if(ti.clinic_Offering__r.Has_Tax__c && ti.Tax__c != NULL) {
+                            	totalGSTCollection += ti.Tax__c;    
+                            }
+                        }
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.Name.contains('Complimentary NP')) {
+                    	amountNP = amountNP!=null?amountNP+ti.Charge__c:ti.Charge__c; 
+                        if(ti.Quantity__c != NULL)
+                        	countNP += ti.Quantity__c ;
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.Name.contains('Complimentary PPV')) {
+                    	amountPPV = amountPPV!=null?amountPPV+ti.Charge__c:ti.Charge__c;  
+                        if(ti.Quantity__c != NULL)
+                        	countPPV += ti.Quantity__c;
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.Name.contains('Family Health Card') && ti.Quantity__c != NULL) {
+                        fhc += ti.Quantity__c;
+                    }
+                       
+                    if(ti.Clinic_Offering__c != NULL && (ti.clinic_Offering__r.Name.contains('Gift of Health') || ti.clinic_Offering__r.Name.contains('GOH')) && ti.Quantity__c != NULL) {
+                    	goh += ti.Quantity__c;
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && (ti.clinic_Offering__r.Name.contains('Giving Back To Community') || ti.clinic_Offering__r.Name.contains('1 HBC')) && ti.Quantity__c != NULL) {
+                    	hbc += ti.Quantity__c;
+                    }
+                    
+                    if(ti.Clinic_Offering__c != NULL && ti.clinic_Offering__r.Name.contains('OWING')) {
+                    	amountOwing = amountOwing!=null?amountOwing+ti.Charge__c:ti.Charge__c;  
+                    }
+                }
+                if(!trans.void__c)
+                    summaryTableMap = populateSummaryMap(summaryTableMap,trans,transObj,commisionable,isMarketingPromo);
+                else{
+                 system.debug('>>>>>>>>>transObj>>>>>>'+transObj);
+                    voidedTransList.add(transObj);
+                }
+            }
+        }
+        system.debug('>>>>>>>voidedTransList>>>>>>>>>>>>>>'+voidedTransList);
+        return summaryTableMap;   
+    }
+    private Map<string,ReportTableWrapper> populateSummaryMap(Map<string,ReportTableWrapper> summaryTableMap,Transaction__c trans,TransactionReportWrapper transObj,boolean commissionable,boolean isMarketingPromo){
+        
+        ReportTableWrapper newRtw  = new ReportTableWrapper();
+        boolean newVal = true; 
+        if(summaryTableMap.containsKey(trans.Transaction_Name__c)){
+            newVal = false;
+            //----------------Add amount by payment methods (segregated)----------------------------
+            newRtw  = summaryTableMap.get(trans.Transaction_Name__c);
+            newRtw.count += 1;
+            if(commissionable) newRtw.commCharges += trans.Charge_Amount__c;
+            else newRtw.nonCommCharges += trans.Charge_Amount__c;
+            
+            newRtw.tax += transObj.tax;
+            newRtw.totalPayment += trans.Payment_Amount__c;
+        }else{
+            //----------------populate amount by payment methods (segregated)----------------------------
+            newRtw.transactionName = trans.transaction_name__c;
+            newRtw.count = 1;
+            if(commissionable) {
+                newRtw.commCharges = trans.Charge_Amount__c;
+                newRtw.nonCommCharges = 0;
+            }
+            else {
+                newRtw.nonCommCharges = trans.Charge_Amount__c;
+                newRtw.commCharges = 0;
+            }
+            
+            newRtw.tax = transObj.tax;
+            newRtw.totalPayment = trans.Payment_Amount__c;
+        }
+        
+        if(trans.getSObjects('Payments__r') != NULL)
+            newRtw = setPaymentAmountByMethod(newVal,newRtw,trans.getSObjects('Payments__r'),transObj,commissionable,isMarketingPromo);
+        else
+            transList.add(transObj);
+        
+        //------------------------- clinic collection -----------------------------------
+        if(!isMarketingPromo){
+            clinicCollection.tax = clinicCollection.tax!=null?clinicCollection.tax+transObj.tax:transObj.tax;
+            clinicCollection.totalPayment = clinicCollection.totalPayment!=null?clinicCollection.totalPayment+trans.Payment_Amount__c:trans.Payment_Amount__c;
+        }
+        //--------------------total collection-------------------------------------------
+        if(commissionable){
+            totalValues.totalComm = totalValues.totalComm!=null?totalValues.totalComm+trans.Charge_Amount__c:trans.Charge_Amount__c;
+            clinicCollection.totalComm = clinicCollection.totalComm!=null?clinicCollection.totalComm+trans.Charge_Amount__c:trans.Charge_Amount__c;
+        }else{
+            totalValues.totalNonComm = totalValues.totalNonComm!=null?totalValues.totalNonComm+trans.Charge_Amount__c:trans.Charge_Amount__c;
+            clinicCollection.totalNonComm = clinicCollection.totalNonComm!=null?clinicCollection.totalNonComm+trans.Charge_Amount__c:trans.Charge_Amount__c;
+        }
+        totalValues.tax = totalValues.tax!=null?totalValues.tax+transObj.tax:transObj.tax;
+        totalValues.totalPayment = totalValues.totalPayment!=null?totalValues.totalPayment+trans.Payment_Amount__c:trans.Payment_Amount__c;
+        
+        summaryTableMap.put(trans.Transaction_Name__c,newRtw);
+        return summaryTableMap;
+    }
+    private ReportTableWrapper setPaymentAmountByMethod(boolean newVal,ReportTableWrapper rtw, List<Payments__c> payments,TransactionReportWrapper transObj,boolean commisionable,boolean isMarketingPromo){
+        integer count = 0;
+        
+        for(Payments__c pay : payments){
+            TransactionReportWrapper temp = transObj.clone();
+            temp.Commissionable = commisionable;
+            if(count == 0){
+                temp.payment = pay.Payment_Amount__c;
+                temp.payMode = pay.Payment_Mode_Code__c;
+                if(pay.Installment_Options__c != null)
+                    temp.payMode += '/'+pay.Installment_Options__c;
+                count += 1;
+                transList.add(temp);
+            }
+            else{
+                temp.charge = 0;
+                temp.tax = 0;
+                temp.payment = pay.Payment_Amount__c;
+                temp.payMode = pay.Payment_Mode_Code__c;
+                if(pay.Installment_Options__c != null)
+                    temp.payMode += '/'+pay.Installment_Options__c;
+                transList.add(temp);
+            }
+            
+            
+            //-------------------segregation operation------------------------------
+            if(pay.Payment_Mode_Code__c == '$' ) {
+                rtw.dollar = rtw.dollar!=null?rtw.dollar+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.dollar = totalValues.dollar>0?totalValues.dollar+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.dollarCount = totalValues.dollarCount>0?totalValues.dollarCount+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.dollar = clinicCollection.dollar>0?clinicCollection.dollar+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            if(pay.Payment_Mode_Code__c == 'PayNow') {
+                rtw.PN = rtw.PN!=null?rtw.PN+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.PN = totalValues.PN>0?totalValues.PN+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.PNCount = totalValues.PNCount>0?totalValues.PNCount+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.PN = clinicCollection.PN>0?clinicCollection.PN+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            if(pay.Payment_Mode_Code__c == 'PayLah') {
+                rtw.PL = rtw.PL!=null?rtw.PL+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.PL = totalValues.PL>0?totalValues.PL+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.PLCount = totalValues.PLCount>0?totalValues.PLCount+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.PL = clinicCollection.PL>0?clinicCollection.PL+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            if(pay.Payment_Mode_Code__c == 'Touch N Go') {
+                rtw.TG = rtw.TG!=null?rtw.TG+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.TG = totalValues.TG>0?totalValues.TG+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.TGCount = totalValues.TGCount>0?totalValues.TGCount+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.TG = clinicCollection.TG>0?clinicCollection.TG+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            if(pay.Payment_Mode_Code__c == Label.New_Payment_Mode_1) {
+                rtw.T1 = rtw.T1!=null?rtw.T1+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.T1 = totalValues.T1>0?totalValues.T1+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.T1Count = totalValues.T1Count>0?totalValues.T1Count+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.T1 = clinicCollection.T1>0?clinicCollection.T1+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            if(pay.Payment_Mode_Code__c == Label.New_Payment_Mode_2) {
+                rtw.T2 = rtw.T2!=null?rtw.T2+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.T2 = totalValues.T2>0?totalValues.T2+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.T2Count = totalValues.T2Count>0?totalValues.T2Count+1:1;
+                
+                if(!isMarketingPromo){
+                    clinicCollection.T2 = clinicCollection.T2>0?clinicCollection.T2+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'AX'){
+                rtw.AX = rtw.AX!=null?rtw.AX+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.AX = totalValues.AX>0?totalValues.AX+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.AXCount = totalValues.AXCount>0?totalValues.AXCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.AX = clinicCollection.AX>0?clinicCollection.AX+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'DN'){
+                rtw.DN = rtw.DN!=null?rtw.DN+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.DN = totalValues.DN>0?totalValues.DN+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.DNCount = totalValues.DNCount>0?totalValues.DNCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.DN = clinicCollection.DN>0?clinicCollection.DN+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'NT'){
+                rtw.NT = rtw.NT!=null?rtw.NT+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.NT = totalValues.NT>0?totalValues.NT+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.NTCount = totalValues.NTCount>0?totalValues.NTCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.NT = clinicCollection.NT>0?clinicCollection.NT+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'VS'){
+                rtw.VS = rtw.VS!=null?rtw.VS+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.VS = totalValues.VS>0?totalValues.VS+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.VSCount = totalValues.VSCount>0?totalValues.VSCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.VS = clinicCollection.VS>0?clinicCollection.VS+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                    if(pay.Options__c == 'Installments') {
+                    	clinicCollection.visaInstalment = clinicCollection.visaInstalment>0?clinicCollection.visaInstalment+pay.Payment_Amount__c:pay.Payment_Amount__c;    
+                    }
+                    else {
+                    	clinicCollection.visaFull = clinicCollection.visaFull>0?clinicCollection.visaFull+pay.Payment_Amount__c:pay.Payment_Amount__c;    
+                    }
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'MC'){
+                rtw.MC = rtw.MC!=null?rtw.MC+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.MC = totalValues.MC>0?totalValues.MC+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.MCCount = totalValues.MCCount>0?totalValues.MCCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.MC = clinicCollection.MC>0?clinicCollection.MC+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                    if(pay.Options__c == 'Installments') {
+                    	clinicCollection.masterInstalment = clinicCollection.masterInstalment>0?clinicCollection.masterInstalment+pay.Payment_Amount__c:pay.Payment_Amount__c;    
+                    }
+                    else {
+                    	clinicCollection.masterFull = clinicCollection.masterFull>0?clinicCollection.masterFull+pay.Payment_Amount__c:pay.Payment_Amount__c;    
+                    }
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'O'){
+                rtw.O = rtw.O!=null?rtw.O+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.O = totalValues.O>0?totalValues.O+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.OCount = totalValues.OCount>0?totalValues.OCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.O = clinicCollection.O>0?clinicCollection.O+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+            else if(pay.Payment_Mode_Code__c == 'VC') {
+            	 if(!isMarketingPromo){
+                    clinicCollection.voucher = clinicCollection.voucher>0?clinicCollection.voucher+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }    
+            }
+            else{
+                rtw.OTH = rtw.OTH!=null?rtw.OTH+ pay.Payment_Amount__c:pay.Payment_Amount__c;
+                totalValues.OTH = totalValues.OTH != NULL ?totalValues.OTH+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                if(newVal) totalValues.OTHCount = totalValues.OTHCount>0?totalValues.OTHCount+1:1;
+                if(!isMarketingPromo){
+                    clinicCollection.OTH = clinicCollection.OTH!=NULL?clinicCollection.OTH+pay.Payment_Amount__c:pay.Payment_Amount__c;
+                }
+            }
+        }
+        return rtw;
+    }
+    
+    //-------------- Table Wrapper ---------------------------
+    public class ReportTableWrapper{
+        public string transactionName 	{get;set;}
+        public Integer count			{get;set;}
+        public decimal dollar			{get;set;}
+        public decimal AX				{get;set;}
+        public decimal DN				{get;set;}
+        public decimal NT				{get;set;}
+        public decimal VS				{get;set;}
+        public decimal MC				{get;set;}
+        public decimal PN               {get;set;}
+        public decimal PL               {get;set;}
+        public decimal TG               {get;set;}
+        public decimal T1               {get;set;}
+        public decimal T2               {get;set;}
+        public decimal O				{get;set;}
+        public decimal OTH				{get;set;}
+        public decimal commCharges		{get;set;}
+        public decimal nonCommCharges	{get;set;}
+        public decimal tax 				{get;set;}
+        public decimal totalPayment		{get;set;}
+    }
+    //-------------- Total Values Wrapper --------------------
+    public class TotalValuesWrapper{
+        public decimal dollar			{get;set;}
+        public decimal dollarCount		{get;set;}
+        public decimal AX				{get;set;}
+        public decimal AXCount			{get;set;}
+        public decimal DN				{get;set;}
+        public decimal DNCount			{get;set;}
+        public decimal NT				{get;set;}
+        public decimal NTCount			{get;set;}
+        public decimal VS				{get;set;}
+        public decimal VSCount			{get;set;}
+        public decimal MC				{get;set;}
+        public decimal MCCount			{get;set;}
+        public decimal PN				{get;set;}
+        public decimal PNCount			{get;set;}
+        public decimal PL				{get;set;}
+        public decimal PLCount			{get;set;}
+        public decimal TG				{get;set;}
+        public decimal TGCount			{get;set;}
+        public decimal T1				{get;set;}
+        public decimal T1Count			{get;set;}
+        public decimal T2				{get;set;}
+        public decimal T2Count			{get;set;}
+        public decimal O				{get;set;}
+        public decimal OCount			{get;set;}
+        public decimal OTH				{get;set;}
+        public decimal OTHCount			{get;set;}
+        public decimal totalComm		{get;set;}
+        public decimal totalNonComm		{get;set;}
+        public decimal tax 				{get;set;}
+        public decimal totalPayment		{get;set;}
+        public decimal visaInstalment   {get;set;}
+        public decimal masterInstalment {get;set;}
+        public decimal visaFull         {get;set;}
+        public decimal masterFull       {get;set;}
+        public decimal voucher          {get;set;}
+    }
+    //-------------- TransactionWrapper ----------------------
+    public class TransactionReportWrapper{
+        public string dt				{get;set;}
+        public string LastModifiedDate	{get;set;}
+        public string service			{get;set;}
+        public string firstName 		{get;set;}
+        public string lastName			{get;set;}
+        public string docName			{get;set;}
+        public string clinicName		{get;set;}
+        public Decimal charge			{get;set;}
+        public Decimal tax				{get;set;}
+        public Decimal payment			{get;set;}
+        public string payMode			{get;set;}
+        public boolean Commissionable	{get;set;}
+    }
+}
